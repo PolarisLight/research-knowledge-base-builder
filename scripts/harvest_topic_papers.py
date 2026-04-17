@@ -89,7 +89,18 @@ class Candidate:
     final_score: float = 0.0
     classification: str = ""
     existing_in_vault: bool = False
+    note_path: str = ""
     local_pdf: str = ""
+
+
+@dataclass
+class VaultScan:
+    titles: set[str] = field(default_factory=set)
+    dois: set[str] = field(default_factory=set)
+    urls: set[str] = field(default_factory=set)
+    note_by_title: dict[str, str] = field(default_factory=dict)
+    note_by_doi: dict[str, str] = field(default_factory=dict)
+    note_by_url: dict[str, str] = field(default_factory=dict)
 
 
 def parse_args(argv: list[str]) -> argparse.Namespace:
@@ -122,6 +133,8 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--year-to", type=int, help="Optional upper bound for publication year.")
     parser.add_argument("--vault", help="Optional vault root for duplicate checking and managed pending import.")
     parser.add_argument("--prefix", help="KB prefix used to locate <prefix>-待处理清单.md inside the vault.")
+    parser.add_argument("--notes-folder", help="Optional canonical notes folder name inside the vault.")
+    parser.add_argument("--triage-folder", help="Optional triage note folder name inside the vault.")
     parser.add_argument("--out-dir", help="Directory for the JSON manifest and Markdown report.")
     parser.add_argument(
         "--download-pdfs",
@@ -135,6 +148,11 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     )
     parser.add_argument("--pdf-dir", help="Directory for downloaded PDFs.")
     parser.add_argument("--max-downloads", type=int, default=12, help="Maximum PDFs to download in one run.")
+    parser.add_argument(
+        "--skip-note-stubs",
+        action="store_true",
+        help="Do not create or update triage note stubs for harvested papers.",
+    )
     parser.add_argument(
         "--mailto",
         help="Optional email address for polite API access, especially helpful for Crossref.",
@@ -200,6 +218,17 @@ def unique_preserve(values: Iterable[str]) -> list[str]:
         seen.add(value)
         result.append(value)
     return result
+
+
+def remember_path(mapping: dict[str, str], key: str, relative_path: str) -> None:
+    if key and key not in mapping:
+        mapping[key] = relative_path
+
+
+def obsidian_link(relative_path: str, alias: str | None = None) -> str:
+    if alias:
+        return f"[[{relative_path}|{alias}]]"
+    return f"[[{relative_path}]]"
 
 
 def looks_like_pdf(url: str) -> bool:
@@ -497,12 +526,10 @@ def merge_candidates(records: list[SourceRecord]) -> list[Candidate]:
     return list(merged.values())
 
 
-def scan_existing_vault(vault: Path | None) -> tuple[set[str], set[str], set[str]]:
-    existing_titles: set[str] = set()
-    existing_dois: set[str] = set()
-    existing_urls: set[str] = set()
+def scan_existing_vault(vault: Path | None) -> VaultScan:
+    scan = VaultScan()
     if vault is None or not vault.exists():
-        return existing_titles, existing_dois, existing_urls
+        return scan
     for path in vault.rglob("*.md"):
         parts_lower = {part.lower() for part in path.parts}
         if ".obsidian" in parts_lower or "assets" in parts_lower:
@@ -511,31 +538,36 @@ def scan_existing_vault(vault: Path | None) -> tuple[set[str], set[str], set[str
             content = path.read_text(encoding="utf-8", errors="ignore")
         except OSError:
             continue
+        relative_path = path.relative_to(vault).as_posix()
         title_match = re.search(r"^title:\s*(.+)$", content, flags=re.MULTILINE)
         if title_match:
-            existing_titles.add(normalize_title(title_match.group(1).strip().strip("\"'")))
+            key = normalize_title(title_match.group(1).strip().strip("\"'"))
+            scan.titles.add(key)
+            remember_path(scan.note_by_title, key, relative_path)
         heading_match = re.search(r"^#\s+(.+)$", content, flags=re.MULTILINE)
         if heading_match:
-            existing_titles.add(normalize_title(heading_match.group(1).strip()))
+            key = normalize_title(heading_match.group(1).strip())
+            scan.titles.add(key)
+            remember_path(scan.note_by_title, key, relative_path)
         doi_match = re.search(r"^doi:\s*(.+)$", content, flags=re.MULTILINE)
         if doi_match:
             normalized = normalize_doi(doi_match.group(1))
             if normalized and normalized != "n a":
-                existing_dois.add(normalized)
+                scan.dois.add(normalized)
+                remember_path(scan.note_by_doi, normalized, relative_path)
         for url in re.findall(r"https?://[^\s)>]+", content):
             normalized = normalize_url(url)
             if normalized:
-                existing_urls.add(normalized)
-    return existing_titles, existing_dois, existing_urls
+                scan.urls.add(normalized)
+                remember_path(scan.note_by_url, normalized, relative_path)
+    return scan
 
 
 def classify_candidates(
     candidates: list[Candidate],
     include_keywords: list[str],
     exclude_keywords: list[str],
-    existing_titles: set[str],
-    existing_dois: set[str],
-    existing_urls: set[str],
+    vault_scan: VaultScan,
 ) -> None:
     for candidate in candidates:
         candidate.include_hits = keyword_hits(candidate.title, candidate.abstract, candidate.venue, include_keywords)
@@ -567,8 +599,13 @@ def classify_candidates(
         title_key = normalize_title(candidate.title)
         doi_key = normalize_doi(candidate.doi)
         url_key = normalize_url(candidate.official_url)
-        if title_key in existing_titles or (doi_key and doi_key in existing_dois) or (url_key and url_key in existing_urls):
+        if title_key in vault_scan.titles or (doi_key and doi_key in vault_scan.dois) or (url_key and url_key in vault_scan.urls):
             candidate.existing_in_vault = True
+            candidate.note_path = (
+                vault_scan.note_by_doi.get(doi_key)
+                or vault_scan.note_by_title.get(title_key)
+                or vault_scan.note_by_url.get(url_key, "")
+            )
             candidate.classification = "existing"
             continue
         if candidate.final_score >= 10 and not candidate.exclude_hits:
@@ -585,6 +622,161 @@ def safe_file_name(title: str, year: int | None) -> str:
     base = re.sub(r'[<>:"/\\\\|?*]+', "-", base)
     base = re.sub(r"\s+", " ", base).strip()
     return (base[:160] or "paper") + ".pdf"
+
+
+def safe_note_name(title: str, year: int | None) -> str:
+    prefix = f"{year} " if year else ""
+    base = (prefix + clean_text(title)).strip()
+    base = re.sub(r'[<>:"/\\\\|?*]+', "-", base)
+    base = re.sub(r"\s+", " ", base).strip()
+    return (base[:160] or "paper") + ".md"
+
+
+def kb_config_path(vault: Path, prefix: str) -> Path:
+    return vault / "assets" / "paper_search" / "configs" / f"{prefix}-kb-config.json"
+
+
+def load_kb_config(vault: Path | None, prefix: str | None) -> dict[str, object]:
+    if vault is None or prefix is None:
+        return {}
+    path = kb_config_path(vault, prefix)
+    if not path.exists():
+        return {}
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    return payload if isinstance(payload, dict) else {}
+
+
+def resolve_note_folders(
+    vault: Path | None,
+    prefix: str | None,
+    notes_folder_arg: str | None,
+    triage_folder_arg: str | None,
+) -> tuple[str, str]:
+    if vault is None:
+        return clean_text(notes_folder_arg), clean_text(triage_folder_arg)
+
+    config = load_kb_config(vault, prefix)
+    notes_folder = clean_text(notes_folder_arg) or clean_text(str(config.get("notes_folder", "")))
+    triage_folder = clean_text(triage_folder_arg) or clean_text(str(config.get("triage_folder", "")))
+
+    if not notes_folder and prefix:
+        candidates = [
+            child.name
+            for child in vault.iterdir()
+            if child.is_dir()
+            and child.name not in {"assets", ".obsidian"}
+            and child.name.startswith(f"{prefix}-")
+            and not child.name.endswith("-待处理")
+        ]
+        if len(candidates) == 1:
+            notes_folder = candidates[0]
+
+    if not triage_folder:
+        if notes_folder:
+            triage_folder = f"{notes_folder}-待处理"
+        elif prefix:
+            triage_folder = f"{prefix}-待处理笔记"
+
+    return notes_folder, triage_folder
+
+
+def build_triage_note(candidate: Candidate, prefix: str, vault: Path) -> str:
+    safe_title = candidate.title.replace('"', "'")
+    local_pdf_embed = ""
+    if candidate.local_pdf:
+        pdf_path = Path(candidate.local_pdf)
+        if vault in pdf_path.parents:
+            local_pdf_embed = obsidian_link(pdf_path.relative_to(vault).as_posix())
+
+    lines = [
+        "---",
+        "tags:",
+        "  - paper-note",
+        "  - triage-note",
+        f"  - {prefix}",
+        f"title: \"{safe_title}\"",
+        f"year: {candidate.year if candidate.year is not None else 'N/A'}",
+        f"venue: {candidate.venue or 'N/A'}",
+        "tier: pending",
+        f"subtype: {candidate.classification or 'pending'}",
+        "category: pending",
+        f"official_url: {candidate.official_url or 'N/A'}",
+        f"doi: {candidate.doi or 'N/A'}",
+        f"reading_status: {'pdf-downloaded' if candidate.local_pdf else 'metadata-only'}",
+        f"evidence_level: {'pdf-available' if candidate.local_pdf else 'metadata-only'}",
+        f'one_sentence: "{safe_title} | pending triage"' if safe_title else 'one_sentence: "pending triage"',
+        "---",
+        "",
+        f"# {safe_title}",
+        "",
+        f"[[{prefix}-待处理清单|返回待处理清单]]",
+        f"[[{prefix}-索引|返回总索引]]",
+        "",
+        "## 当前状态",
+        "",
+        f"- 分类：{candidate.classification or 'pending'}",
+        f"- 年份：{candidate.year if candidate.year is not None else '待补'}",
+        f"- 来源：{candidate.venue or '待补'}",
+        f"- 分数：{candidate.final_score:.1f}",
+        f"- 检索来源：{', '.join(candidate.source_names) if candidate.source_names else '待补'}",
+        f"- 命中查询：{', '.join(candidate.queries) if candidate.queries else '待补'}",
+        "",
+        "## 外部入口",
+        "",
+        f"- 官方页面：{candidate.official_url or 'N/A'}",
+        f"- 在线 PDF：{candidate.pdf_url or 'N/A'}",
+        f"- 本地 PDF：{local_pdf_embed or '待下载'}",
+        "",
+    ]
+    if local_pdf_embed:
+        lines += [
+            "## 论文原文（内嵌 PDF）",
+            "",
+            f"!{local_pdf_embed}",
+            "",
+        ]
+    lines += [
+        "## 为什么先收进来",
+        "",
+        f"- 相关查询：{', '.join(candidate.queries) if candidate.queries else '待补'}",
+        f"- include 命中：{', '.join(candidate.include_hits) if candidate.include_hits else '无'}",
+        f"- exclude 命中：{', '.join(candidate.exclude_hits) if candidate.exclude_hits else '无'}",
+        "",
+        "## 读这篇时优先确认什么",
+        "",
+        "- 它到底解决什么任务设置",
+        "- 它相对最近 baseline 的真实改动",
+        "- 训练和推理流程是否真的和 claim 对应",
+        "- 最强证据是否足够支撑作者结论",
+        "",
+        "## 当前摘录",
+        "",
+        "- 摘要要点：待补",
+        "- 方法主线：待补",
+        "- 主结果：待补",
+        "- 最大疑问：待补",
+        "",
+    ]
+    return "\n".join(lines).rstrip() + "\n"
+
+
+def ensure_note_stub(
+    candidate: Candidate,
+    vault: Path,
+    prefix: str,
+    triage_folder: str,
+) -> bool:
+    if candidate.note_path or candidate.classification not in {"core", "bridge"}:
+        return False
+    target = vault / triage_folder / safe_note_name(candidate.title, candidate.year)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    if not target.exists():
+        target.write_text(build_triage_note(candidate, prefix, vault), encoding="utf-8")
+    candidate.note_path = target.relative_to(vault).as_posix()
+    return True
 
 
 def download_candidate_pdfs(
@@ -625,7 +817,8 @@ def download_candidate_pdfs(
 
 
 def format_candidate_line(candidate: Candidate, vault: Path | None) -> str:
-    parts = [candidate.title]
+    title = obsidian_link(candidate.note_path, candidate.title) if candidate.note_path else candidate.title
+    parts = [title]
     meta: list[str] = []
     if candidate.year:
         meta.append(str(candidate.year))
@@ -639,6 +832,8 @@ def format_candidate_line(candidate: Candidate, vault: Path | None) -> str:
         parts.append(f"`doi={normalize_doi(candidate.doi)}`")
     line = "- " + " ".join(parts)
     extra_lines: list[str] = []
+    if candidate.note_path:
+        extra_lines.append(f"  Note: {obsidian_link(candidate.note_path)}")
     if candidate.official_url:
         extra_lines.append(f"  Official: {candidate.official_url}")
     if candidate.pdf_url:
@@ -671,6 +866,7 @@ def build_report(
     raw_records: int,
     errors: list[str],
     downloaded_count: int,
+    note_stub_count: int,
     pending_updated: bool,
     vault: Path | None,
 ) -> str:
@@ -701,6 +897,7 @@ def build_report(
         f"- Low-confidence: {len(groups['low-confidence'])}",
         f"- Existing in vault: {len(groups['existing'])}",
         f"- PDFs downloaded this run: {downloaded_count}",
+        f"- Triage note stubs created this run: {note_stub_count}",
         f"- Pending page updated: {'yes' if pending_updated else 'no'}",
         "",
     ]
@@ -815,6 +1012,7 @@ def main(argv: list[str]) -> int:
     queries = unique_preserve(args.query or [args.topic])
     sources = args.source or list(SOURCE_CHOICES)
     vault = Path(args.vault).expanduser().resolve() if args.vault else None
+    notes_folder, triage_folder = resolve_note_folders(vault, args.prefix, args.notes_folder, args.triage_folder)
     out_dir = Path(args.out_dir).expanduser().resolve() if args.out_dir else None
     if out_dir is None:
         if vault:
@@ -859,12 +1057,18 @@ def main(argv: list[str]) -> int:
             source_counts[source] = source_counts.get(source, 0) + len(records)
 
     candidates = merge_candidates(raw_records)
-    existing_titles, existing_dois, existing_urls = scan_existing_vault(vault)
-    classify_candidates(candidates, args.include_keyword, args.exclude_keyword, existing_titles, existing_dois, existing_urls)
+    vault_scan = scan_existing_vault(vault)
+    classify_candidates(candidates, args.include_keyword, args.exclude_keyword, vault_scan)
 
     downloaded_count = 0
     if pdf_dir is not None:
         downloaded_count = download_candidate_pdfs(session, candidates, pdf_dir, args.max_downloads)
+
+    note_stub_count = 0
+    if vault and args.prefix and triage_folder and not args.skip_note_stubs:
+        for candidate in candidates:
+            if ensure_note_stub(candidate, vault, args.prefix, triage_folder):
+                note_stub_count += 1
 
     pending_updated = False
     if vault and args.prefix:
@@ -883,6 +1087,9 @@ def main(argv: list[str]) -> int:
         "source_counts": source_counts,
         "pending_updated": pending_updated,
         "downloaded_count": downloaded_count,
+        "note_stub_count": note_stub_count,
+        "notes_folder": notes_folder,
+        "triage_folder": triage_folder,
         "errors": errors,
         "candidates": [asdict(candidate) for candidate in candidates],
     }
@@ -895,6 +1102,7 @@ def main(argv: list[str]) -> int:
         raw_records=len(raw_records),
         errors=errors,
         downloaded_count=downloaded_count,
+        note_stub_count=note_stub_count,
         pending_updated=pending_updated,
         vault=vault,
     )
@@ -905,6 +1113,9 @@ def main(argv: list[str]) -> int:
     print(f"Report: {report_path}")
     if pdf_dir is not None:
         print(f"PDF directory: {pdf_dir}")
+    if triage_folder:
+        print(f"Triage note folder: {triage_folder}")
+    print(f"NoteStubs={note_stub_count}")
     print(f"Core={sum(1 for item in candidates if item.classification == 'core')}")
     print(f"Bridge={sum(1 for item in candidates if item.classification == 'bridge')}")
     print(f"LowConfidence={sum(1 for item in candidates if item.classification == 'low-confidence')}")

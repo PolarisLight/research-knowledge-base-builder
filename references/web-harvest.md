@@ -25,6 +25,7 @@ It currently:
 - applies optional include / exclude keywords
 - checks whether the paper already exists in the target vault
 - downloads directly reachable PDFs into a pending bucket by default when `--vault` or `--pdf-dir` is provided
+- reuses an existing note or creates a triage note stub so the paper is directly viewable from a note page
 - writes a JSON manifest and a Markdown report
 - updates the managed auto-harvest block in the pending page when `--vault` and `--prefix` point at an existing scaffolded KB
 
@@ -93,11 +94,12 @@ The first pass should optimize for recall plus intelligible triage, not for pret
 
 1. Harvest from the web with `2-6` seed queries.
 2. Download reachable PDFs into the pending queue.
-3. Review `core` and `bridge` candidates.
-4. Refine the field boundary and track list.
-5. Scaffold the KB if needed.
-6. Promote only the important papers into canonical notes.
-7. Re-run harvest after boundary or query changes.
+3. Reuse existing notes or create triage notes with inline PDF embeds.
+4. Review `core` and `bridge` candidates.
+5. Refine the field boundary and track list.
+6. Scaffold the KB if needed.
+7. Promote only the important papers into canonical notes.
+8. Re-run harvest after boundary or query changes.
 
 ## Limits
 

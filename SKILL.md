@@ -48,6 +48,7 @@ Use `scripts/harvest_topic_papers.py` to:
 - compare hits against the current vault
 - classify candidates into `core`, `bridge`, `low-confidence`, and `existing`
 - download directly reachable PDFs into the pending bucket by default when a vault is provided
+- connect each kept paper to a note page by reusing an existing note or creating a triage note with an inline PDF embed
 - generate a JSON manifest plus a Markdown report
 
 Example:
@@ -137,6 +138,7 @@ Keep the frontmatter machine-readable. The browser view and any future automatio
 Default rule:
 
 - do not move a paper into the canonical notes folder unless the note already answers the core questions: `what problem`, `why prior work is insufficient`, `what the method actually changes`, `how training / inference works`, `what evidence is strongest`, and `what the real limitation is`
+- even a triage note should let the user directly open the paper inside the note via an inline PDF embed when a local PDF exists
 
 ### 6. Extract key method and results visuals
 

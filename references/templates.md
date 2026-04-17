@@ -45,10 +45,14 @@ one_sentence: "<this paper does X by Y for Z>"
 - 任务子类：<subtype>
 - 方法标签：<method tags>
 - 官方页面：<url>
-- PDF：![[assets/paper_pdfs/已入库/<paper>.pdf]]
+- PDF：[[assets/paper_pdfs/已入库/<paper>.pdf]]
 - 关键图片：![[assets/paper_figures/已入库/<paper>_figure_main.png]]
 - 图片说明：<why this image matters>
 - 主要实验结果图表（可选）：![[assets/paper_figures/已入库/<paper>_table_main_1.png]]
+
+## 论文原文（内嵌 PDF）
+
+![[assets/paper_pdfs/已入库/<paper>.pdf]]
 
 ## 这篇论文到底在解决什么问题
 
@@ -178,6 +182,64 @@ one_sentence: "<this paper does X by Y for Z>"
 - 当前笔记属于：<triage / partial / mature>
 ```
 
+## Triage Paper Note
+
+```markdown
+---
+tags:
+  - paper-note
+  - triage-note
+  - <prefix>
+title: "<paper title>"
+year: <year-or-N/A>
+venue: <venue-or-N/A>
+tier: pending
+subtype: <core-or-bridge>
+category: pending
+official_url: <url-or-N/A>
+doi: <doi-or-N/A>
+reading_status: pdf-downloaded / metadata-only
+evidence_level: pdf-available / metadata-only
+one_sentence: "<paper title> | pending triage"
+---
+
+# <paper title>
+
+[[<prefix>-待处理清单|返回待处理清单]]
+[[<prefix>-索引|返回总索引]]
+
+## 当前状态
+
+- 分类：<core / bridge>
+- 分数：<score>
+- 检索来源：<arxiv / dblp / crossref>
+- 命中查询：<queries>
+
+## 外部入口
+
+- 官方页面：<url>
+- 在线 PDF：<pdf-url-or-N/A>
+- 本地 PDF：[[assets/paper_pdfs/待处理/<paper>.pdf]]
+
+## 论文原文（内嵌 PDF）
+
+![[assets/paper_pdfs/待处理/<paper>.pdf]]
+
+## 读这篇时优先确认什么
+
+- 它到底解决什么任务设置
+- 它相对最近 baseline 的真实改动
+- 训练和推理流程是否真的和 claim 对应
+- 最强证据是否足够支撑作者结论
+
+## 当前摘录
+
+- 摘要要点：待补
+- 方法主线：待补
+- 主结果：待补
+- 最大疑问：待补
+```
+
 ## Track Page Template
 
 ```markdown
@@ -225,6 +287,7 @@ tags:
 - `一篇论文到底做了什么` 用自己的话写清了，不是贴作者原句
 - `相对最接近 baseline 的真实改动` 写清了，不把包装当创新
 - `实验与结果` 写了结论，不只是罗列数据集和指标
+- `论文原文（内嵌 PDF）` 可以直接在笔记里打开，而不是只留外链
 - PDF 和关键图至少补齐其一，最好两者都有
 - 如果保留了结果表截图，裁剪区域不能接近整页；接近整页时改用手工 bbox 重做
 - 章节顺序保持稳定，不要随意改名

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
@@ -76,6 +77,16 @@ def write_text(path: Path, text: str, force: bool, dry_run: bool) -> str:
     if not dry_run:
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(text.rstrip() + "\n", encoding="utf-8")
+    return "updated" if existed else "created"
+
+
+def write_json(path: Path, payload: object, force: bool, dry_run: bool) -> str:
+    existed = path.exists()
+    if existed and not force:
+        return "skipped"
+    if not dry_run:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     return "updated" if existed else "created"
 
 
@@ -188,6 +199,7 @@ def build_pending(prefix: str, title: str, notes_folder: str) -> str:
             "",
             f"- 这里列出尚未并入 `[[{prefix}-索引]]` 的候选条目。",
             f"- 成熟笔记完成后，统一归入 `{notes_folder}/`。",
+            f"- 自动检索候选会优先回填已有笔记；如果还没有笔记，会自动生成可内嵌 PDF 的待处理笔记草稿。",
             "- 本地附件如果采用状态桶，建议先放 `assets/paper_pdfs/待处理`，完成后移入 `assets/paper_pdfs/已入库`。",
             "- 明确不进入主线的条目，移入 `assets/paper_pdfs/不相关`，并登记到 `不相关条目` 页面。",
             "",
@@ -416,22 +428,26 @@ def main(argv: list[str]) -> int:
 
     tracks = choose_tracks(args.track)
     notes_folder = args.notes_folder.strip() if args.notes_folder else f"{prefix}-{title}"
+    triage_folder = f"{notes_folder}-待处理"
 
     print(f"Vault: {vault}")
     print(f"Prefix: {prefix}")
     print(f"Title: {title}")
     print(f"Notes folder: {notes_folder}")
+    print(f"Triage folder: {triage_folder}")
     print("Tracks:")
     for track in tracks:
         print(f"  - {track.slug}: {track.title}")
 
     ensure_dir(vault / notes_folder, args.dry_run)
+    ensure_dir(vault / triage_folder, args.dry_run)
     ensure_dir(vault / "assets" / "paper_pdfs" / "已入库", args.dry_run)
     ensure_dir(vault / "assets" / "paper_pdfs" / "待处理", args.dry_run)
     ensure_dir(vault / "assets" / "paper_pdfs" / "不相关", args.dry_run)
     ensure_dir(vault / "assets" / "paper_figures" / "已入库", args.dry_run)
     ensure_dir(vault / "assets" / "paper_figures" / "待处理", args.dry_run)
     ensure_dir(vault / "assets" / "paper_figures" / "不相关", args.dry_run)
+    ensure_dir(vault / "assets" / "paper_search" / "configs", args.dry_run)
     ensure_dir(vault / "assets" / "paper_search" / "manifests", args.dry_run)
     ensure_dir(vault / "assets" / "paper_search" / "reports", args.dry_run)
 
@@ -450,6 +466,16 @@ def main(argv: list[str]) -> int:
     for path, text in files:
         status = write_text(path, text, force=args.force, dry_run=args.dry_run)
         results.append((path, status))
+
+    config_path = vault / "assets" / "paper_search" / "configs" / f"{prefix}-kb-config.json"
+    config_payload = {
+        "prefix": prefix,
+        "title": title,
+        "notes_folder": notes_folder,
+        "triage_folder": triage_folder,
+        "updated": date.today().isoformat(),
+    }
+    results.append((config_path, write_json(config_path, config_payload, force=args.force, dry_run=args.dry_run)))
 
     print("")
     for path, status in results:
